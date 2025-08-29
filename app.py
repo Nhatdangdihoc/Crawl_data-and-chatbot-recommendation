@@ -3,6 +3,7 @@ import numpy as np
 import ast
 from numpy.linalg import norm
 from flask import Flask, request, jsonify
+from flask_cors import CORS  # Import CORS
 from sentence_transformers import SentenceTransformer
 import logging
 from typing import Tuple, Dict, Any
@@ -115,6 +116,16 @@ def row_to_dict(row: pd.Series) -> Dict[str, Any]:
 # Khởi tạo Flask
 app = Flask(__name__)
 
+# Cấu hình CORS
+CORS(app, resources={
+    r"/*": {
+        "origins": ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:8080"],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
+        "supports_credentials": True
+    }
+})
+
 # Load model BERT tốt hơn
 logger.info("Loading BERT model...")
 model = SentenceTransformer('sentence-transformers/paraphrase-multilingual-mpnet-base-v2')
@@ -126,11 +137,20 @@ def home():
         "status": "ok", 
         "message": "Fashion Search API is running",
         "model": "paraphrase-multilingual-mpnet-base-v2",
-        "total_products": len(df)
+        "total_products": len(df),
+        "cors_enabled": True
     }), 200
 
-@app.route("/search", methods=["POST"])
+@app.route("/search", methods=["POST", "OPTIONS"])
 def search():
+    # Handle preflight requests
+    if request.method == "OPTIONS":
+        response = jsonify({"status": "ok"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
+        response.headers.add("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS")
+        return response
+        
     start_time = time.time()
     
     try:
@@ -142,6 +162,8 @@ def search():
         
         if not query:
             return jsonify({"error": "Missing or empty query"}), 400
+        
+        logger.info(f"Search query: '{query}' with filters: {filters}")
         
         # Tìm matches
         matches_df, scores = find_best_matches(
@@ -165,17 +187,21 @@ def search():
         
         processing_time = time.time() - start_time
         
-        return jsonify({
+        response_data = {
             "query": query,
             "matches": results,
             "total_found": len(results),
             "processing_time_ms": round(processing_time * 1000, 2),
             "filters_applied": filters
-        })
+        }
+        
+        logger.info(f"Found {len(results)} matches in {processing_time:.3f}s")
+        
+        return jsonify(response_data)
         
     except Exception as e:
         logger.error(f"Search error: {str(e)}")
-        return jsonify({"error": "Internal server error"}), 500
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
 @app.route("/stats", methods=["GET"])
 def stats():
@@ -190,19 +216,41 @@ def stats():
                 "max": float(df['price'].max()) if 'price' in df.columns else None,
                 "avg": float(df['price'].mean()) if 'price' in df.columns else None
             },
-            "available_filters": ["gender", "category", "color", "price_range"]
+            "available_filters": ["gender", "category", "color", "price_range"],
+            "cors_enabled": True
         }
         return jsonify(stats)
     except Exception as e:
         logger.error(f"Stats error: {str(e)}")
         return jsonify({"error": "Could not generate stats"}), 500
 
+# Health check endpoint
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({
+        "status": "healthy",
+        "timestamp": time.time(),
+        "model_loaded": model is not None,
+        "dataset_size": len(df)
+    }), 200
+
+# Error handlers
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({"error": "Endpoint not found"}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({"error": "Internal server error"}), 500
+
 if __name__ == "__main__":
-    print("\n" + "="*50)
+    print("\n" + "="*60)
     print("🚀 Fashion Search API Starting...")
     print(f"📊 Loaded {len(df)} products")
     print("🤖 Model: paraphrase-multilingual-mpnet-base-v2")
     print("🌐 Server: http://localhost:5000")
-    print("="*50 + "\n")
+    print("✅ CORS enabled for frontend development")
+    print("🔗 Allowed origins: localhost:3000, localhost:8080")
+    print("="*60 + "\n")
     
     app.run(debug=True, use_reloader=False, host='0.0.0.0', port=5000)
